@@ -1,0 +1,14 @@
+langchain
+langchain-community
+langchain-huggingface
+langchain-openai
+faiss-cpu
+pypdf
+openai
+python-dotenv
+fastapi
+python-multipart
+pdfplumber
+pytesseract
+PyMuPDF
+fastembed
