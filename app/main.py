@@ -15,23 +15,21 @@ from transformers import pipeline
 app = FastAPI()
 vector_store = None
 
-# CONFIGURE TESSERACT PATH
+# ---------------- CONFIG ----------------
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
-# ✅ PIPELINE FIXING FOR BETTER ANSWERS
 qa_pipeline = pipeline("text2text-generation", model="google/flan-t5-small")
 
 
-# Cleaning text for better chunking and embedding
+# ---------------- CLEAN TEXT ----------------
 def clean_text(text):
     text = re.sub(r'[^a-zA-Z0-9., ]+', ' ', text)
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
 
-# Extraction of text from PDF
+# ---------------- TEXT EXTRACTION ----------------
 def extract_text_from_pdf(file_path):
-
     text = ""
 
     try:
@@ -43,11 +41,10 @@ def extract_text_from_pdf(file_path):
     except:
         pass
 
-    # TRY OCR (FOR SCANNED PDFs) 
+    # OCR fallback
     if not text.strip():
         try:
             doc = fitz.open(file_path)
-
             for page in doc:
                 pix = page.get_pixmap(dpi=300)
                 img_path = f"temp_{page.number}.png"
@@ -67,7 +64,7 @@ def extract_text_from_pdf(file_path):
     return clean_text(text)
 
 
-# UPLOAD AND PROCESSING OF PDF
+# ---------------- UPLOAD ----------------
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
 
@@ -85,8 +82,8 @@ async def upload_pdf(file: UploadFile = File(...)):
         return {"message": "No readable text found in PDF"}
 
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=300,
-        chunk_overlap=50
+        chunk_size=800,
+        chunk_overlap=150
     )
 
     chunks = splitter.split_text(text)
@@ -101,7 +98,7 @@ async def upload_pdf(file: UploadFile = File(...)):
     return {"message": "PDF uploaded and processed successfully"}
 
 
-# QUESTION ASKING
+# ---------------- ASK ----------------
 class QuestionRequest(BaseModel):
     question: str
 
@@ -114,44 +111,58 @@ async def ask_question(request: QuestionRequest):
     if vector_store is None:
         return {"answer": "Please upload a PDF first."}
 
-    # ✅ CONTEXT RETRIEVAL 
-    docs = vector_store.similarity_search(request.question, k=3)
-
+    # 🔍 Retrieve context
+    docs = vector_store.similarity_search(request.question, k=5)
     context = " ".join([doc.page_content for doc in docs])
-    context = context[:600]
+    context = context[:800]
 
-    # ✅ ADDITION OF QUESTION INTO THE CONTEXT
-    context = f"Question: {request.question}. Context: {context}"
+    # ---------------- RULE-BASED EXTRACTION ----------------
+    sentences = re.split(r'(?<=[.!?]) +', context)
 
-    # ✅ PROMPT WRITING FOR ANSWERS 
+    stop_words = ["what", "is", "the", "of", "define", "explain"]
+    question_words = [
+        word for word in request.question.lower().split()
+        if word not in stop_words
+    ]
+
+    best_sentence = ""
+
+    for i, s in enumerate(sentences):
+        if any(word in s.lower() for word in question_words):
+            best_sentence = s
+
+            # add next sentence for completeness
+            if i + 1 < len(sentences):
+                best_sentence += " " + sentences[i + 1]
+            break
+
+    # ✅ If good answer found → return
+    if best_sentence and len(best_sentence.split()) > 5:
+        return {"answer": best_sentence.strip()}
+
+    # ---------------- MODEL FALLBACK ----------------
     prompt = f"""
-You are an AI tutor.
+Answer the question clearly in one sentence using the context.
 
-Answer the question ONLY using the given context.
-
-If the answer is not clearly present, say: Answer not found.
-
+Context:
 {context}
+
+Question:
+{request.question}
 
 Answer:
 """
 
-    result = qa_pipeline(prompt, max_new_tokens=120)
-
+    result = qa_pipeline(prompt, max_new_tokens=100)
     answer = result[0]["generated_text"].strip()
 
-    # ✅ FOR CLEANER ANSWERS AND REMOVAL OF PROMPT
     answer = answer.replace(prompt, "").strip()
-    answer = re.sub(r'(?:\b\w\s+){3,}\w\b', '', answer)
-    answer = re.sub(r'\s+', ' ', answer).strip()
+    answer = re.sub(r'\s+', ' ', answer)
 
-    # Ensure proper ending
-    if not answer.endswith("."):
-        if "." in answer:
-            answer = answer[:answer.rfind(".")+1]
-        else:
-            answer = answer + "."
-    if len(answer) < 20:
-        answer = context[:300]
+    if "." in answer:
+        answer = answer[:answer.rfind(".") + 1]
+
+    if len(answer) < 5:
+        answer = "Answer not found in the PDF."
 
     return {"answer": answer}
