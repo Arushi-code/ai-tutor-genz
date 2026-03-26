@@ -3,7 +3,6 @@ import re
 from fastapi import FastAPI, UploadFile, File
 from pydantic import BaseModel
 import pdfplumber
-import pytesseract
 import fitz
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -15,56 +14,68 @@ from transformers import pipeline
 app = FastAPI()
 vector_store = None
 
-# ---------------- CONFIG ----------------
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-
-qa_pipeline = pipeline("text2text-generation", model="google/flan-t5-small")
+# ✅ MODEL FOR BETTER PERFORMANCE
+qa_pipeline = pipeline("text2text-generation", model="google/flan-t5-base")
 
 
-# ---------------- CLEAN TEXT ----------------
+# TEXT CLEANING TO GET THE BETTER ANSWERS
 def clean_text(text):
-    text = re.sub(r'[^a-zA-Z0-9., ]+', ' ', text)
-    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'[^\w\s.,!?]', ' ', text)
+    text = re.sub(r'\n+', '\n', text)
+    text = re.sub(r'[ \t]+', ' ', text)
     return text.strip()
 
 
-# ---------------- TEXT EXTRACTION ----------------
+# FIXING BROKEN LINES FROM THE PDF TO GET CLEAR AND BETTER CONTEXT FOR ANSWERING
+def fix_broken_lines(text):
+    lines = text.split("\n")
+    fixed_text = ""
+
+    for line in lines:
+        line = line.strip()
+
+        if not line:
+            continue
+
+        # ❌ removal of numbering like 1. 2. i. ii. iii. iv. v. etc which can break the answer generation
+        if re.match(r'^(i+|v+|\d+)\b', line.lower()):
+            continue
+
+        # ✅ join lines that are broken 
+        if fixed_text and not fixed_text.endswith(('.', '?', '!')):
+            fixed_text += " " + line
+        else:
+            fixed_text += "\n" + line
+
+    return fixed_text.strip()
+
+
+# EXTRACTION OF TEXT FROM THE PDF FOR GETTING BETTER ANSWERS
 def extract_text_from_pdf(file_path):
     text = ""
 
     try:
         with pdfplumber.open(file_path) as pdf:
             for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
+                t = page.extract_text()
+                if t:
+                    text += t + "\n"
     except:
         pass
 
-    # OCR fallback
+    # fallback
     if not text.strip():
-        try:
-            doc = fitz.open(file_path)
-            for page in doc:
-                pix = page.get_pixmap(dpi=300)
-                img_path = f"temp_{page.number}.png"
-                pix.save(img_path)
+        doc = fitz.open(file_path)
+        for page in doc:
+            text += page.get_text()
 
-                page_text = pytesseract.image_to_string(
-                    img_path,
-                    config="--oem 3 --psm 6 -l eng"
-                )
+    text = clean_text(text)
+    text = fix_broken_lines(text)
 
-                text += page_text + "\n"
-                os.remove(img_path)
-
-        except Exception as e:
-            print("OCR error:", e)
-
-    return clean_text(text)
+    return text
 
 
-# ---------------- UPLOAD ----------------
+# UPLOAD AND PROCESS PDF TO CREATE VECTOR STORE FOR ANSWERING QUESTIONS
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
 
@@ -81,13 +92,14 @@ async def upload_pdf(file: UploadFile = File(...)):
     if not text:
         return {"message": "No readable text found in PDF"}
 
+    # ✅ CHUNKING OF THE TEXT 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=800,
-        chunk_overlap=150
+        chunk_overlap=200,
+        separators=["\n\n", "\n", ".", " "]
     )
 
     chunks = splitter.split_text(text)
-    chunks = [c for c in chunks if len(c) > 50]
 
     embeddings = HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2"
@@ -98,7 +110,7 @@ async def upload_pdf(file: UploadFile = File(...)):
     return {"message": "PDF uploaded and processed successfully"}
 
 
-# ---------------- ASK ----------------
+# ASK THE QUESTION AND GET THE ANSWER BASED ON THE PROCESSED PDF 
 class QuestionRequest(BaseModel):
     question: str
 
@@ -111,58 +123,57 @@ async def ask_question(request: QuestionRequest):
     if vector_store is None:
         return {"answer": "Please upload a PDF first."}
 
-    # 🔍 Retrieve context
-    docs = vector_store.similarity_search(request.question, k=5)
+    question = request.question.strip()
+
+    # 🔍 CONTEXT RETRIEVAL
+    docs = vector_store.similarity_search(question, k=5)
     context = " ".join([doc.page_content for doc in docs])
-    context = context[:800]
 
-    # ---------------- RULE-BASED EXTRACTION ----------------
-    sentences = re.split(r'(?<=[.!?]) +', context)
+    context = context[:2000]
 
-    stop_words = ["what", "is", "the", "of", "define", "explain"]
-    question_words = [
-        word for word in request.question.lower().split()
-        if word not in stop_words
-    ]
+    # ✅ AGAIN CLEAN THE CONTEXT TO GET BETTER ANSWERS
+    context = re.sub(r'\b(i|ii|iii|iv|v)\b', '', context, flags=re.IGNORECASE)
+    context = re.sub(r'\s+', ' ', context)
 
-    best_sentence = ""
-
-    for i, s in enumerate(sentences):
-        if any(word in s.lower() for word in question_words):
-            best_sentence = s
-
-            # add next sentence for completeness
-            if i + 1 < len(sentences):
-                best_sentence += " " + sentences[i + 1]
-            break
-
-    # ✅ If good answer found → return
-    if best_sentence and len(best_sentence.split()) > 5:
-        return {"answer": best_sentence.strip()}
-
-    # ---------------- MODEL FALLBACK ----------------
+    # PROMPT ENGINNEERING FOR BETTER ANSWERS
     prompt = f"""
-Answer the question clearly in one sentence using the context.
+You are an AI tutor.
+
+Your task:
+- Read the context carefully
+- Answer the question correctly in ONE COMPLETE sentence
+- Do NOT copy broken lines
+- Do NOT include unrelated text
 
 Context:
 {context}
 
 Question:
-{request.question}
+{question}
 
 Answer:
 """
 
-    result = qa_pipeline(prompt, max_new_tokens=100)
-    answer = result[0]["generated_text"].strip()
+    result = qa_pipeline(
+        prompt,
+        max_new_tokens=100,
+        do_sample=False
+    )
 
+    answer = result[0]["generated_text"]
+
+    # CLEANING OF THE OUTPUT 
     answer = answer.replace(prompt, "").strip()
     answer = re.sub(r'\s+', ' ', answer)
 
+    # removal of bad starting words
+    answer = re.sub(r'^(thus|and|so)\s+', '', answer, flags=re.IGNORECASE)
+
+    # keeping only one sentence
     if "." in answer:
         answer = answer[:answer.rfind(".") + 1]
 
-    if len(answer) < 5:
-        answer = "Answer not found in the PDF."
+    if len(answer) < 10:
+        return {"answer": "Answer not found in the PDF."}
 
     return {"answer": answer}

@@ -1,46 +1,52 @@
 import streamlit as st
 import requests
 
-st.set_page_config(page_title="AI Tutor for Remote India 🚀")
+st.set_page_config(page_title="AI Tutor", layout="centered")
 
-st.title("AI Tutor for Remote India 🚀")
+st.title("🤖 AI Tutor for Students")
+st.write("Upload a PDF and ask any question from it.")
 
-# ------------------ PDF Upload ------------------
-uploaded_file = st.file_uploader("Upload Textbook PDF", type="pdf")
+# UPLOAD FILE TO PROCESS PDF
+uploaded_file = st.file_uploader("📄 Upload your PDF", type="pdf")
 
 if uploaded_file is not None:
-    if st.button("Upload PDF"):
-        with st.spinner("Uploading PDF..."):
-            response = requests.post(
-                "http://127.0.0.1:8003/upload",   # ✅ SAME PORT as backend
-                files={"file": uploaded_file}     # ✅ FIXED LINE
-            )
+    st.success("✅ File uploaded successfully!")
 
-        if response.status_code == 200:
-            st.success("PDF uploaded successfully to backend!")
-        else:
-            try:
-                error_msg = response.json().get("error", "Unknown error")
-            except:
-                error_msg = response.text
-            st.error(f"Upload failed: {error_msg}")
+    if st.button("Process PDF"):
+        with st.spinner("Processing PDF..."):
+            files = {"file": uploaded_file.getvalue()}
+            response = requests.post("http://127.0.0.1:8003/upload", files=files)
 
-# ------------------ Ask Question ------------------
-question = st.text_input("Ask your question from the uploaded PDF:")
+            if response.status_code == 200:
+                st.success("📚 PDF processed successfully!")
+            else:
+                st.error("❌ Error processing PDF")
 
-if st.button("Submit"):
+# ASK THE QUESTION TO GET THE ANSWER
+st.subheader("❓ Ask your question")
+
+question = st.text_input("Type your question here")
+
+if st.button("Get Answer"):
     if question.strip() == "":
-        st.warning("Please enter a question")
+        st.warning("⚠️ Please enter a question")
     else:
-        with st.spinner("Getting answer..."):
+        with st.spinner("Thinking... 🤔"):
             response = requests.post(
                 "http://127.0.0.1:8003/ask",
                 json={"question": question}
             )
 
-        if response.status_code == 200:
-            answer = response.json().get("answer", "No answer received")
-            st.markdown("**Answer:**")
-            st.write(answer)
-        else:
-            st.error(f"Error: {response.status_code}")
+            if response.status_code == 200:
+                answer = response.json()["answer"]
+
+                # ANSWER DISPLAY WITH NICE FORMATTING
+                st.markdown("### ✅ Answer")
+                st.success(answer)
+
+            else:
+                st.error("❌ Failed to get answer")
+
+# ADD A FOOTER
+st.markdown("---")
+st.caption("💡 Powered by AI | Built with FastAPI + LangChain + Transformers")
