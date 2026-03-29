@@ -8,7 +8,7 @@ import fitz
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-import google.generativeai as genai
+from openai import OpenAI
 
 # ================= CUSTOM PAGE SETTINGS =================
 st.set_page_config(
@@ -115,34 +115,40 @@ def process_pdf_to_faiss(file_bytes):
     return True
 
 def generate_ai_answer(question, target_language, vs):
-    api_key = os.environ.get("GEMINI_API_KEY", "")
+    api_key = os.environ.get("OPENAI_API_KEY", "")
     if not api_key:
-        return "🚨 No **GEMINI_API_KEY** found in environment variables. Please set it in your Streamlit Cloud Dashboard!"
+        return "🚨 No **OPENAI_API_KEY** found in environment variables. Please set it in your Streamlit Cloud Dashboard!"
     
-    genai.configure(api_key=api_key)
+    try:
+        client = OpenAI(api_key=api_key)
+    except Exception as e:
+        return f"🚨 OpenAI Client Error: {str(e)}"
     
     docs = vs.similarity_search(question, k=3)
     context = " ".join([doc.page_content for doc in docs])
     context = context.replace("\n", " ")
     context = re.sub(r'\s+', ' ', context)
     
-    prompt = f"""You are a helpful, smart AI tutor for students.
+    system_prompt = f"""You are a helpful, smart AI tutor for students.
 Answer the student's question based ONLY on the given context.
 Always provide your final answer in **{target_language}**.
 Give a correct and educational answer in simple {target_language}.
-Limit your answer to exactly 1 or 2 simple sentences. If the answer is not in the context, say you don't know based on the provided text.
+Limit your answer to exactly 1 or 2 simple sentences. If the answer is not in the context, say you don't know based on the provided text."""
 
-Context: 
-{context}
-
-Question: {question}"""
+    user_prompt = f"Context: \n{context}\n\nQuestion: {question}"
 
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        result = model.generate_content(prompt)
-        return result.text.strip()
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.3
+        )
+        return response.choices[0].message.content.strip()
     except Exception as e:
-        return f"🚨 Failed to get AI response from Google Gemini: {str(e)}"
+        return f"🚨 Failed to get AI response from OpenAI: {str(e)}"
 
 
 # ================= FRONTEND LOGIC =================
