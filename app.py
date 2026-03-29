@@ -138,7 +138,7 @@ Context:
 Question: {question}"""
 
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-pro")
         result = model.generate_content(prompt)
         return result.text.strip()
     except Exception as e:
