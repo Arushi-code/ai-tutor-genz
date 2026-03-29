@@ -127,10 +127,10 @@ def generate_ai_answer(question, target_language, vs):
     context = re.sub(r'\s+', ' ', context)
     
     prompt = f"""You are a helpful, smart AI tutor for students.
-Answer the student's question based ONLY on the given context.
+Answer the student's question based on the given context. If the context does not explicitly define or fully answer the question, you are allowed to use your expert knowledge to help them, but always prioritize the context provided.
 Always provide your final answer in **{target_language}**.
 Give a correct and educational answer in simple {target_language}.
-Limit your answer to exactly 1 or 2 simple sentences. If the answer is not in the context, say you don't know based on the provided text.
+Limit your answer to exactly 1 or 2 simple sentences.
 
 Context: 
 {context}
