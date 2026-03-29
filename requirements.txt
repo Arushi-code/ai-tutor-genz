@@ -5,5 +5,5 @@ faiss-cpu
 sentence-transformers
 pdfplumber
 PyMuPDF
-openai
+google-generativeai
 streamlit
