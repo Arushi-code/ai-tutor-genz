@@ -138,11 +138,28 @@ Context:
 Question: {question}"""
 
     try:
-        model = genai.GenerativeModel("gemini-pro")
+        model = genai.GenerativeModel("gemini-1.5-flash")
         result = model.generate_content(prompt)
         return result.text.strip()
     except Exception as e:
-        return f"🚨 Failed to get AI response from Google Gemini: {str(e)}"
+        # If the hardcoded version 404s due to region locks or deprecation, let the API Key tell us what models it CAN use!
+        try:
+            available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+            if not available_models:
+                return "🚨 Your API Key does not have access to ANY text generation models. This might be a regional block or an incorrect project key."
+            
+            # Use the first available Gemini model!
+            fallback = available_models[0]
+            for m in available_models:
+                if 'flash' in m.lower():
+                    fallback = m
+                    break
+                    
+            model = genai.GenerativeModel(fallback.replace("models/", ""))
+            result = model.generate_content(prompt)
+            return result.text.strip()
+        except Exception as e2:
+            return f"🚨 API Key Check Error: {str(e2)}. \n\nOriginal Error: {str(e)}"
 
 
 # ================= FRONTEND LOGIC =================
