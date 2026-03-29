@@ -11,19 +11,25 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 
-from transformers import pipeline
+import google.generativeai as genai
 
 port = int(os.environ.get("PORT", 8000))
 
+# Initialize the Free Google Gemini Cloud API
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY", ""))
+
 # ✅ GLOBAL INSTANCES
 vector_store = None
-embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
-)
+embeddings = None # Lazy-loaded to prevent Render boot timeouts
 
-# CHANGED MODEL: Qwen2.5-0.5B-Instruct is a totally free, highly capable local model 
-# that gives brilliant conversational and detailed answers but uses extremely low RAM (1GB).
-qa_pipeline = pipeline("text-generation", model="Qwen/Qwen2.5-0.5B-Instruct")
+def get_embeddings():
+    global embeddings
+    if embeddings is None:
+        print("Downloading/Loading HuggingFace Embeddings...")
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        )
+    return embeddings
 
 # ✅ SERVER LIFESPAN
 @asynccontextmanager
@@ -33,7 +39,7 @@ async def lifespan(app: FastAPI):
         try:
             vector_store = FAISS.load_local(
                 "faiss_index", 
-                embeddings, 
+                get_embeddings(), 
                 allow_dangerous_deserialization=True
             )
             print("Successfully loaded existing FAISS index from disk.")
@@ -260,7 +266,7 @@ async def upload_pdf(file: UploadFile = File(...)):
     )
     chunks = splitter.split_text(text)
     
-    vector_store = FAISS.from_texts(chunks, embeddings)
+    vector_store = FAISS.from_texts(chunks, get_embeddings())
     vector_store.save_local("faiss_index")
 
     return {"message": "PDF uploaded successfully. The knowledge has been saved and is ready for questions!"}
@@ -287,33 +293,25 @@ async def ask_question(request: QuestionRequest):
 
     context = context.replace("\n", " ")
     context = re.sub(r'\s+', ' ', context)
-    context = context[:800] # Give causal LM a bit more context if available
+    # Let's cleanly construct the prompt
+    prompt = f"""You are a helpful, smart AI tutor for students.
+Answer the student's question based ONLY on the given context.
+Always provide your final answer in **{target_language}**.
+Give a correct and educational answer in simple {target_language}.
+Limit your answer to exactly 1 or 2 simple sentences. If the answer is not in the context, say you don't know based on the provided text.
 
-    # Build the conversation format specifically for Qwen Instruct models
-    messages = [
-        {
-            "role": "system", 
-            "content": f"You are a helpful, smart AI tutor for students. Answer the student's question based ONLY on the given context. Always provide your final answer in **{target_language}**. Give a correct and educational answer in simple {target_language}, but keep it extremely short and concise. Limit your answer to exactly 1 or 2 simple sentences. If the answer is not in the context, say you don't know based on the provided text."
-        },
-        {"role": "user", "content": f"Context:\n{context}\n\nQuestion:\n{question}"}
-    ]
+Context: 
+{context}
 
-    # Convert messages into the exact prompt string Qwen expects
-    prompt = qa_pipeline.tokenizer.apply_chat_template(
-        messages, 
-        tokenize=False, 
-        add_generation_prompt=True
-    )
+Question: {question}"""
 
-    result = qa_pipeline(
-        prompt,
-        max_new_tokens=80,
-        do_sample=True,
-        temperature=0.3,
-        return_full_text=False # Ensures we only get the new answer, not the prompt repeated
-    )
-
-    answer = result[0]["generated_text"].strip()
+    try:
+        # Using Gemini 1.5 Flash - extremely fast, capable and consumes 0 MB of your server's RAM!
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        result = model.generate_content(prompt)
+        answer = result.text.strip()
+    except Exception as e:
+        answer = "🚨 Failed to get AI response. Please ensure you have added your free GEMINI_API_KEY environment variable in Render!"
 
     # Optional: ensure we stop at the last full sentence if it cut off midway,
     # but Qwen usually stops cleanly at an end-of-turn token.

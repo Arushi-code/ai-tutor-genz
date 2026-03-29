@@ -1,6 +1,10 @@
 import streamlit as st
 import requests
 import time
+import os
+
+# Dynamic URL configuration for local vs Render production
+API_URL = os.environ.get("BACKEND_URL", "http://127.0.0.1:8000").rstrip('/')
 
 # ================= CUSTOM PAGE SETTINGS =================
 st.set_page_config(
@@ -68,7 +72,7 @@ with st.sidebar:
             with st.spinner("Extracting and securing knowledge..."):
                 files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")}
                 try:
-                    response = requests.post("http://127.0.0.1:8000/upload", files=files)
+                    response = requests.post(f"{API_URL}/upload", files=files)
                     if response.status_code == 200:
                         st.session_state.pdf_uploaded = True
                         st.success("✅ Neural embeddings successful!")
@@ -123,7 +127,7 @@ if prompt := st.chat_input("Ask a question about your textbook..."):
         with st.spinner("Analyzing context..."):
             try:
                 response = requests.post(
-                    "http://127.0.0.1:8000/ask",
+                    f"{API_URL}/ask",
                     json={"question": prompt, "language": language}
                 )
                 
