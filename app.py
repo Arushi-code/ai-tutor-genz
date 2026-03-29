@@ -80,34 +80,37 @@ def fix_broken_lines(text):
             fixed_text += "\n" + line
     return fixed_text.strip()
 
-def process_pdf_to_faiss(file_bytes):
-    temp_path = "temp.pdf"
-    with open(temp_path, "wb") as f:
-        f.write(file_bytes)
-        
-    text = ""
-    try:
-        with pdfplumber.open(temp_path) as pdf:
-            for page in pdf.pages:
-                t = page.extract_text()
-                if t: text += t + "\n"
-    except: pass
-
-    if not text.strip():
+def process_multiple_pdfs_to_faiss(uploaded_files):
+    all_text = ""
+    for file in uploaded_files:
+        temp_path = "temp.pdf"
+        with open(temp_path, "wb") as f:
+            f.write(file.getvalue())
+            
+        text = ""
         try:
-            doc = fitz.open(temp_path)
-            for page in doc: text += page.get_text()
+            with pdfplumber.open(temp_path) as pdf:
+                for page in pdf.pages:
+                    t = page.extract_text()
+                    if t: text += t + "\n"
         except: pass
-        
-    if os.path.exists(temp_path):
-        os.remove(temp_path)
 
-    text = fix_broken_lines(clean_text(text))
-    if not text:
+        if not text.strip():
+            try:
+                doc = fitz.open(temp_path)
+                for page in doc: text += page.get_text()
+            except: pass
+            
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+        all_text += fix_broken_lines(clean_text(text)) + "\n\n"
+
+    if not all_text.strip():
         return False
         
     splitter = RecursiveCharacterTextSplitter(chunk_size=350, chunk_overlap=50, separators=["\n\n", "\n", ".", " "])
-    chunks = splitter.split_text(text)
+    chunks = splitter.split_text(all_text)
     
     vs = FAISS.from_texts(chunks, get_embeddings())
     vs.save_local("faiss_index")
@@ -175,25 +178,27 @@ with st.sidebar:
     
     st.markdown("---")
     st.subheader("📚 1. Knowledge Base")
-    uploaded_file = st.file_uploader("Upload Course Material (PDF)", type=["pdf"])
+    uploaded_files = st.file_uploader("Upload Course Material (PDFs)", type=["pdf"], accept_multiple_files=True)
 
-    if uploaded_file and not st.session_state.pdf_uploaded:
-        if st.button("Process & Learn PDF", type="primary"):
+    if uploaded_files and not st.session_state.pdf_uploaded:
+        if st.button("Process & Learn PDFs", type="primary"):
             with st.spinner("Extracting and securing knowledge..."):
-                success = process_pdf_to_faiss(uploaded_file.getvalue())
+                success = process_multiple_pdfs_to_faiss(uploaded_files)
                 if success:
                     st.session_state.pdf_uploaded = True
                     st.success("✅ Neural embeddings successful!")
                     st.balloons()
-                    st.session_state.messages.append({"role": "assistant", "content": f"I have successfully read **{uploaded_file.name}**. You can start asking me questions!"})
+                    
+                    file_names = ", ".join([f"**{u.name}**" for u in uploaded_files])
+                    st.session_state.messages.append({"role": "assistant", "content": f"I have successfully read {file_names}. You can start asking me questions!"})
                     time.sleep(1)
                     st.rerun()
                 else:
-                    st.error("❌ Failed to process PDF. No text found.")
+                    st.error("❌ Failed to process PDFs. No text found.")
 
     elif st.session_state.pdf_uploaded:
         st.success("**Systems Active:** Memory is locked and loaded.")
-        if st.button("Clear Memory & Upload New PDF"):
+        if st.button("Clear Memory & Upload New PDFs"):
             st.session_state.pdf_uploaded = False
             st.session_state.vs = None
             st.session_state.messages = []
