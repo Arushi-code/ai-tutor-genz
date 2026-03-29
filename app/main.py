@@ -31,23 +31,23 @@ def get_embeddings():
         )
     return embeddings
 
-# ✅ SERVER LIFESPAN
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global vector_store
-    if os.path.exists("faiss_index"):
-        try:
-            vector_store = FAISS.load_local(
-                "faiss_index", 
-                get_embeddings(), 
-                allow_dangerous_deserialization=True
-            )
-            print("Successfully loaded existing FAISS index from disk.")
-        except Exception as e:
-            print(f"Failed to load FAISS index: {e}")
-    yield
+# ✅ SERVER LIFESPAN (REMOVED to prevent startup timeouts on Render)
+app = FastAPI()
 
-app = FastAPI(lifespan=lifespan)
+def get_vector_store():
+    global vector_store
+    if vector_store is None:
+        if os.path.exists("faiss_index"):
+            try:
+                vector_store = FAISS.load_local(
+                    "faiss_index", 
+                    get_embeddings(), 
+                    allow_dangerous_deserialization=True
+                )
+                print("Successfully loaded existing FAISS index from disk.")
+            except Exception as e:
+                print(f"Failed to load FAISS index: {e}")
+    return vector_store
 
 
 # ---------------- TEXT CLEANING ----------------
@@ -281,14 +281,15 @@ class QuestionRequest(BaseModel):
 async def ask_question(request: QuestionRequest):
     global vector_store
 
-    if vector_store is None:
+    vs = get_vector_store()
+    if vs is None:
         return {"answer": "Please upload a PDF first."}
 
     question = request.question.strip()
     target_language = request.language.strip()
 
     # Retrieve context
-    docs = vector_store.similarity_search(question, k=3)
+    docs = vs.similarity_search(question, k=3)
     context = " ".join([doc.page_content for doc in docs])
 
     context = context.replace("\n", " ")
